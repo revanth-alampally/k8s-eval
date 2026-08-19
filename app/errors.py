@@ -32,8 +32,11 @@ class ErrorCode(StrEnum):
     TOOL_NOT_FOUND = "tool_not_found"
     TOOL_EXECUTION_FAILED = "tool_execution_failed"
     RESOURCE_NOT_FOUND = "resource_not_found"
+    LOGS_UNAVAILABLE = "logs_unavailable"
     NAMESPACE_NOT_ALLOWED = "namespace_not_allowed"
+    PERMISSION_DENIED = "permission_denied"
     CLUSTER_UNAVAILABLE = "cluster_unavailable"
+    CLUSTER_TIMEOUT = "cluster_timeout"
     CONFIRMATION_REQUIRED = "confirmation_required"
     CONFIRMATION_INVALID = "confirmation_invalid"
     MUTATION_DISABLED = "mutation_disabled"
@@ -96,14 +99,44 @@ class ResourceNotFoundError(AppError):
     status_code = status.HTTP_404_NOT_FOUND
 
 
+class LogsUnavailableError(AppError):
+    """The pod exists but has no readable log right now.
+
+    Distinct from an invalid argument: retrying with different arguments will not help,
+    and distinct from not-found: the pod is real. The correct next step is to inspect
+    events instead, which is exactly what an image-pull failure requires.
+    """
+
+    code = ErrorCode.LOGS_UNAVAILABLE
+    status_code = status.HTTP_409_CONFLICT
+
+
 class NamespaceNotAllowedError(AppError):
     code = ErrorCode.NAMESPACE_NOT_ALLOWED
+    status_code = status.HTTP_403_FORBIDDEN
+
+
+class PermissionDeniedError(AppError):
+    """The cluster credentials are not authorised for this operation (RBAC)."""
+
+    code = ErrorCode.PERMISSION_DENIED
     status_code = status.HTTP_403_FORBIDDEN
 
 
 class ClusterUnavailableError(AppError):
     code = ErrorCode.CLUSTER_UNAVAILABLE
     status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+
+
+class ClusterTimeoutError(AppError):
+    """The Kubernetes API did not answer within the configured budget.
+
+    Kept distinct from CLUSTER_UNAVAILABLE because it is retryable in a way an outright
+    outage is not, and because the agent must never fill the gap with a guess.
+    """
+
+    code = ErrorCode.CLUSTER_TIMEOUT
+    status_code = status.HTTP_504_GATEWAY_TIMEOUT
 
 
 class ConfirmationRequiredError(AppError):

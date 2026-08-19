@@ -56,7 +56,17 @@ app/
 │       ├── chat.py          POST /v1/chat                      (planned)
 │       └── confirmations.py POST /v1/confirmations/{token}     (planned)
 ├── agent/                   planner, orchestrator, prompts     (planned)
-├── tools/                   tool base class, registry, k8s tools (planned)
+├── tools/
+│   ├── base.py              ToolSpec, namespace and mutation guards
+│   ├── schemas.py           argument models + Kubernetes name validation
+│   ├── registry.py          the complete list of what the agent can do
+│   └── k8s/
+│       ├── client.py        client construction + error translation
+│       ├── models.py        typed, secret-free projections of API objects
+│       ├── convert.py       API object -> model mapping, incl. the health rule
+│       ├── read.py          list_pods, get_pod, describe_pod, get_pod_logs,
+│       │                    list_deployments
+│       └── mutate.py        restart_deployment (mutating)
 └── observability/
     ├── logging.py           structlog setup, JSON or console
     └── instrumentation.py   track_operation: one timing primitive for all layers
@@ -154,10 +164,49 @@ make lint    # ruff + mypy
 make fmt     # ruff format
 ```
 
+## The tools
+
+Six tools, five read-only. This list is the complete answer to "what can the agent do
+to my cluster?", and it lives in one file, `app/tools/registry.py`.
+
+| Tool | Mutating | Notes |
+| --- | --- | --- |
+| `list_pods(namespace)` | no | Computes a health verdict per pod, plus a list of unhealthy names |
+| `get_pod(namespace, pod_name)` | no | Per-container state, images, restart counts |
+| `describe_pod(namespace, pod_name)` | no | Pod **plus recent events** — the only evidence when a container never started |
+| `get_pod_logs(namespace, pod_name, container, tail_lines)` | no | `previous=True` reads a crashed container's log |
+| `list_deployments(namespace)` | no | Desired vs available replicas |
+| `restart_deployment(namespace, deployment_name)` | **yes** | Rolling restart via the standard `restartedAt` annotation |
+
+There is deliberately **no** tool that accepts a command string, and a test enforces
+this: `test_no_tool_accepts_a_free_form_command` fails if any tool ever grows a
+`command`, `script`, `query` or similar argument.
+
+### Guarantees this layer provides
+
+- **Arguments are validated before anything is called.** Every name is checked against
+  the Kubernetes naming rules, so `nginx; rm -rf /` fails at the schema, not the API.
+  `extra="forbid"` means a hallucinated argument is an error rather than being ignored.
+- **Namespaces are allowlisted.** Checked inside every tool, not once at the edge.
+- **Mutation is a static property.** `restart_deployment` is flagged `mutating=True`, so
+  the confirmation gate can be applied before execution rather than inferred from a
+  string. In `read_only_mode` it is not registered at all, *and* it re-checks the flag
+  itself.
+- **Failures are typed.** `resource_not_found`, `permission_denied`, `cluster_timeout`,
+  `cluster_unavailable`, `tool_argument_invalid`, `logs_unavailable`,
+  `namespace_not_allowed`. No `ApiException` escapes the package. The agent can tell
+  "the pod does not exist" from "the API did not answer" — the second is a case where it
+  must not answer at all.
+- **Secrets stay out.** Output models exclude environment variables, volumes and
+  annotations, and error details carry only the parsed API `message`, never response
+  headers.
+- **Everything is timed and logged.** Each call emits `operation`, `outcome` and
+  `duration_ms`. Log *content* is never logged — only its line count.
+
 ## Status
 
 Implemented: configuration, structured logging, correlation IDs, error taxonomy,
-FastAPI skeleton, health endpoints.
+FastAPI skeleton, health endpoints (readiness probes the real cluster), and the full
+Kubernetes tool layer with 67 unit tests.
 
-Next: Kubernetes client and read tools → tool registry → agent loop → `/v1/chat` →
-confirmation flow for mutations → unit tests and evals.
+Next: agent loop → `/v1/chat` → confirmation flow for mutations → AI evals.
