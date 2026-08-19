@@ -1,0 +1,40 @@
+# Image-pull scenario: a tag that does not exist in the registry, so the pod never
+# starts and reports ErrImagePull then ImagePullBackOff.
+#
+# The distinguishing feature versus nginx-crash: there are no container logs at all,
+# because no container ever ran. The evidence lives in the pod's container statuses
+# and in Warning events (Failed / "manifest unknown"). An agent that reflexively
+# reaches for logs will come back empty-handed here and must fall back to events.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-missing
+  labels:
+    app: nginx-missing
+    app.kubernetes.io/part-of: ai-agent-demo
+    demo.scenario: imagepullbackoff
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx-missing
+  template:
+    metadata:
+      labels:
+        app: nginx-missing
+        app.kubernetes.io/part-of: ai-agent-demo
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27-does-not-exist
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 80
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
