@@ -163,6 +163,29 @@ The ones that matter for safety:
 make test    # pytest
 make lint    # ruff + mypy
 make fmt     # ruff format
+make check   # everything the pre-commit hook runs
+```
+
+### Pre-commit hook
+
+`make install` activates a hook that runs `ruff check`, `ruff format --check`, `mypy`
+and the fast tests before every commit; `make hooks-install` does it alone, for a clone
+that already has a virtualenv. The hook lives in `.githooks/pre-commit` so it is
+versioned and reviewable, and is symlinked into `.git/hooks` — no `core.hooksPath`, so
+your git configuration is untouched.
+
+It verifies **the staged snapshot, not the working tree**. That distinction is the
+reason the hook is worth having: if you stage a subset of your edits, checking the
+working tree would pass on code you are not committing and let a broken commit through,
+while unrelated work-in-progress would fail a commit that is perfectly good. The hook
+extracts the index into a temporary directory with `git write-tree | git archive` and
+runs there. Nothing is stashed, so an interrupted hook cannot lose work.
+
+Tests marked `cluster` or `eval` are excluded, so future tests that need a live cluster
+or a real model can never become a prerequisite for committing.
+
+```bash
+git commit --no-verify   # bypass when you genuinely need to
 ```
 
 ## The tools

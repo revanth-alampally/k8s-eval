@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Verify the snapshot that is actually about to be committed.
+#
+# The checks run against a throwaway extract of the index, not the working tree. That
+# matters whenever the two differ: staging a subset of your edits would otherwise let a
+# broken commit pass because the working tree happens to be fine, and unrelated
+# work-in-progress edits would otherwise fail a commit that is perfectly good.
+#
+# Nothing is stashed to achieve this, so an interrupted hook cannot lose work.
+#
+# Bypass with `git commit --no-verify` when you genuinely need to.
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "${repo_root}"
+
+checks="${repo_root}/scripts/run-checks.sh"
+if [[ ! -x "${checks}" ]]; then
+  echo "pre-commit: ${checks} is missing or not executable" >&2
+  exit 1
+fi
+
+# write-tree fails during an unresolved merge; fall back rather than block the commit.
+if ! tree="$(git write-tree 2>/dev/null)"; then
+  echo "pre-commit: cannot snapshot the index, verifying the working tree instead" >&2
+  exec "${checks}"
+fi
+
+staged="$(mktemp -d)"
+trap 'rm -rf "${staged}"' EXIT
+
+git archive --format=tar "${tree}" | tar -x -C "${staged}"
+
+if [[ ! -d "${staged}/app" ]]; then
+  # Happens when the project itself is not staged, e.g. a docs-only first commit.
+  echo "pre-commit: no app/ in the staged snapshot, verifying the working tree instead" >&2
+  "${checks}"
+  exit $?
+fi
+
+echo "pre-commit: verifying staged changes"
+"${checks}" "${staged}"
