@@ -145,6 +145,69 @@ class DeploymentListResult(BaseModel):
     deployments: list[DeploymentSummary] = Field(default_factory=list)
 
 
+class SignalSource(StrEnum):
+    """Where a piece of evidence came from.
+
+    The source travels with the signal so a reader can weigh it: a warning event is the
+    cluster's own account of what happened, while a log line is whatever the workload
+    chose to print.
+    """
+
+    POD_PHASE = "pod_phase"
+    POD_CONDITION = "pod_condition"
+    CONTAINER_STATE = "container_state"
+    RESTART_COUNT = "restart_count"
+    WARNING_EVENT = "warning_event"
+    CONTAINER_LOGS = "container_logs"
+    LOGS_UNAVAILABLE = "logs_unavailable"
+
+
+class SignalSeverity(StrEnum):
+    INFO = "info"
+    WARNING = "warning"
+
+
+class DiagnosticSignal(BaseModel):
+    """One observed fact.
+
+    ``evidence`` is quoted from the cluster -- an event message, a container state, a
+    log excerpt -- never a summary or an inference. Severity is a mechanical mapping
+    (a Warning event is severity warning), not a judgement about the cause.
+    """
+
+    source: SignalSource
+    reason: str = Field(description="The cluster's own label, e.g. 'ImagePullBackOff'.")
+    evidence: str = Field(description="Verbatim supporting detail from the cluster.")
+    container: str | None = None
+    severity: SignalSeverity = SignalSeverity.INFO
+    observed_at: datetime | None = None
+
+
+class PodDiagnosis(BaseModel):
+    """Collected evidence about one pod.
+
+    Deliberately contains no explanation, cause or recommendation. The tool establishes
+    the facts; reasoning over them happens later, and only over what is recorded here.
+    """
+
+    pod: str
+    namespace: str
+    status: str = Field(
+        description="Headline state, following kubectl's STATUS column: the container's "
+        "waiting or terminated reason when there is one, otherwise the pod phase."
+    )
+    healthy: bool
+    phase: str
+    containers_ready: int
+    containers_total: int
+    restart_count: int
+    logs_available: bool = Field(
+        description="False when no container log could be read, which is itself evidence: "
+        "it means no container ever started."
+    )
+    signals: list[DiagnosticSignal] = Field(default_factory=list)
+
+
 class RestartDeploymentResult(BaseModel):
     namespace: str
     deployment_name: str

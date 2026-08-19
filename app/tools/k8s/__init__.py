@@ -1,6 +1,7 @@
 """Deterministic Kubernetes access. No LLM code lives below this point."""
 
 from app.tools.k8s.client import KubernetesClient, KubernetesClientProvider
+from app.tools.k8s.diagnose import diagnose_pod
 from app.tools.k8s.mutate import restart_deployment
 from app.tools.k8s.read import (
     describe_pod,
@@ -14,6 +15,7 @@ __all__ = [
     "KubernetesClient",
     "KubernetesClientProvider",
     "describe_pod",
+    "diagnose_pod",
     "get_pod",
     "get_pod_logs",
     "list_deployments",

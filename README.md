@@ -66,6 +66,7 @@ app/
 │       ├── convert.py       API object -> model mapping, incl. the health rule
 │       ├── read.py          list_pods, get_pod, describe_pod, get_pod_logs,
 │       │                    list_deployments
+│       ├── diagnose.py      diagnose_pod: evidence collection, no interpretation
 │       └── mutate.py        restart_deployment (mutating)
 └── observability/
     ├── logging.py           structlog setup, JSON or console
@@ -174,6 +175,7 @@ to my cluster?", and it lives in one file, `app/tools/registry.py`.
 | `list_pods(namespace)` | no | Computes a health verdict per pod, plus a list of unhealthy names |
 | `get_pod(namespace, pod_name)` | no | Per-container state, images, restart counts |
 | `describe_pod(namespace, pod_name)` | no | Pod **plus recent events** — the only evidence when a container never started |
+| `diagnose_pod(namespace, pod_name)` | no | All evidence about one pod in a single call, as structured signals |
 | `get_pod_logs(namespace, pod_name, container, tail_lines)` | no | `previous=True` reads a crashed container's log |
 | `list_deployments(namespace)` | no | Desired vs available replicas |
 | `restart_deployment(namespace, deployment_name)` | **yes** | Rolling restart via the standard `restartedAt` annotation |
@@ -181,6 +183,46 @@ to my cluster?", and it lives in one file, `app/tools/registry.py`.
 There is deliberately **no** tool that accepts a command string, and a test enforces
 this: `test_no_tool_accepts_a_free_form_command` fails if any tool ever grows a
 `command`, `script`, `query` or similar argument.
+
+### `diagnose_pod`: evidence, not explanation
+
+`diagnose_pod` runs the queries a human would run by hand — pod state, unmet conditions,
+restart counts, warning events, logs — and returns them as a flat list of signals:
+
+```json
+{
+  "pod": "nginx-missing-7575f48ccf-rftkj",
+  "status": "ImagePullBackOff",
+  "healthy": false,
+  "logs_available": false,
+  "signals": [
+    {
+      "source": "container_state",
+      "reason": "ImagePullBackOff",
+      "evidence": "Container 'nginx' is waiting: ImagePullBackOff. Back-off pulling image ...",
+      "container": "nginx",
+      "severity": "warning"
+    }
+  ]
+}
+```
+
+It contains **no cause, no recommendation and no ranking of likelihood**. Every
+`evidence` string is quoted from the cluster and every `reason` is a cluster-issued
+label; `source` records where each fact came from, so the cluster's own account (an
+event) stays distinguishable from the workload's (a log line). `severity` is a
+mechanical mapping — a Warning event is `warning` — not a judgement.
+
+That boundary is the whole point. If this function guessed at causes, the guess would be
+indistinguishable from a fact by the time it reached the model, and a wrong guess would
+be laundered into a confident answer. Tools establish facts; the LLM reasons over them,
+and only over what is recorded here. `test_diagnosis_contains_no_interpretation_fields`
+fails if a `cause`, `explanation` or `recommendation` field ever appears.
+
+Two absences are themselves evidence. `logs_available: false` means no container ever
+started, which is what separates an image-pull failure from a crash. And a pod that does
+not exist raises `resource_not_found` rather than returning an empty signal list, since
+empty evidence would invite an answer about a pod that was never there.
 
 ### Guarantees this layer provides
 
@@ -207,6 +249,6 @@ this: `test_no_tool_accepts_a_free_form_command` fails if any tool ever grows a
 
 Implemented: configuration, structured logging, correlation IDs, error taxonomy,
 FastAPI skeleton, health endpoints (readiness probes the real cluster), and the full
-Kubernetes tool layer with 67 unit tests.
+Kubernetes tool layer including `diagnose_pod`, with 81 unit tests.
 
 Next: agent loop → `/v1/chat` → confirmation flow for mutations → AI evals.

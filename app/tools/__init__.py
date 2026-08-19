@@ -9,6 +9,7 @@ There is no tool that takes a command string, and no tool that shells out.
 
 from app.tools.base import ToolSpec
 from app.tools.k8s.client import KubernetesClient, KubernetesClientProvider
+from app.tools.k8s.diagnose import diagnose_pod
 from app.tools.k8s.mutate import restart_deployment
 from app.tools.k8s.read import (
     describe_pod,
@@ -25,6 +26,7 @@ __all__ = [
     "ToolSpec",
     "build_registry",
     "describe_pod",
+    "diagnose_pod",
     "execute_tool",
     "get_pod",
     "get_pod_logs",

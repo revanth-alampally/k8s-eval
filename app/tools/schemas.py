@@ -70,6 +70,11 @@ class DescribePodInput(ToolInput):
     pod_name: ResourceName = Field(description="Exact name of the pod.")
 
 
+class DiagnosePodInput(ToolInput):
+    namespace: NamespaceName = Field(description="Namespace containing the pod.")
+    pod_name: ResourceName = Field(description="Exact name of the pod to gather evidence on.")
+
+
 class GetPodLogsInput(ToolInput):
     namespace: NamespaceName = Field(description="Namespace containing the pod.")
     pod_name: ResourceName = Field(description="Exact name of the pod.")

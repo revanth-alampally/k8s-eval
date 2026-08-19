@@ -8,6 +8,8 @@ typed model, and log the outcome without the payload.
 
 from __future__ import annotations
 
+from typing import Any
+
 from app.config import Settings
 from app.errors import LogsUnavailableError
 from app.observability.instrumentation import track_operation
@@ -130,22 +132,43 @@ def describe_pod(
                 _request_timeout=client.timeout_seconds,
             )
 
-        with translate_api_errors(resource="events", name=args.pod_name, namespace=args.namespace):
-            # A field selector over an already-validated name; the name pattern cannot
-            # contain the ',' or '=' that would be needed to inject another selector.
-            events = client.core.list_namespaced_event(
-                namespace=args.namespace,
-                field_selector=f"involvedObject.name={args.pod_name}",
-                timeout_seconds=int(client.timeout_seconds),
-                _request_timeout=client.timeout_seconds,
-            )
+        ordered = list_pod_events(args.pod_name, namespace=args.namespace, client=client)
 
         detail = pod_detail(pod)
-        ordered = sorted(events.items or [], key=event_sort_key, reverse=True)[:MAX_EVENTS]
         log["phase"] = detail.phase
         log["event_count"] = len(ordered)
 
     return PodDescription(pod=detail, events=[event_summary(item) for item in ordered])
+
+
+def list_pod_events(
+    pod_name: str,
+    *,
+    namespace: str,
+    client: KubernetesClient,
+    warnings_only: bool = False,
+    limit: int = MAX_EVENTS,
+) -> list[Any]:
+    """Recent events for a pod, newest first.
+
+    An internal helper shared by describe_pod and diagnose_pod rather than a registered
+    tool; callers are responsible for having validated the names already.
+    """
+    # A field selector over an already-validated name; the name pattern cannot contain
+    # the ',' or '=' that would be needed to inject another selector.
+    selector = f"involvedObject.name={pod_name}"
+    if warnings_only:
+        selector = f"{selector},type=Warning"
+
+    with translate_api_errors(resource="events", name=pod_name, namespace=namespace):
+        events = client.core.list_namespaced_event(
+            namespace=namespace,
+            field_selector=selector,
+            timeout_seconds=int(client.timeout_seconds),
+            _request_timeout=client.timeout_seconds,
+        )
+
+    return sorted(events.items or [], key=event_sort_key, reverse=True)[:limit]
 
 
 def get_pod_logs(

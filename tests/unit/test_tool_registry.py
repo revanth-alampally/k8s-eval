@@ -19,6 +19,7 @@ EXPECTED_TOOLS = {
     "list_pods",
     "get_pod",
     "describe_pod",
+    "diagnose_pod",
     "get_pod_logs",
     "list_deployments",
     "restart_deployment",

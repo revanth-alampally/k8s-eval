@@ -19,6 +19,7 @@ from app.config import Settings
 from app.errors import ToolNotFoundError
 from app.tools.base import ToolSpec
 from app.tools.k8s.client import KubernetesClient
+from app.tools.k8s.diagnose import diagnose_pod
 from app.tools.k8s.mutate import restart_deployment
 from app.tools.k8s.read import (
     describe_pod,
@@ -29,6 +30,7 @@ from app.tools.k8s.read import (
 )
 from app.tools.schemas import (
     DescribePodInput,
+    DiagnosePodInput,
     GetPodInput,
     GetPodLogsInput,
     ListDeploymentsInput,
@@ -65,6 +67,18 @@ _TOOL_SPECS: tuple[ToolSpec, ...] = (
         ),
         input_model=DescribePodInput,
         handler=describe_pod,
+    ),
+    ToolSpec(
+        name="diagnose_pod",
+        description=(
+            "Gather all available evidence about one pod in a single call: phase, "
+            "container states, restart counts, unmet conditions, recent warning events "
+            "and recent logs. Use this for 'why is this pod failing?'. It returns facts "
+            "only and draws no conclusion; the explanation is yours to form, and must "
+            "rest solely on the signals returned."
+        ),
+        input_model=DiagnosePodInput,
+        handler=diagnose_pod,
     ),
     ToolSpec(
         name="get_pod_logs",
