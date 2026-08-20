@@ -378,6 +378,49 @@ and safe attributes), Prometheus counters/histograms (with low-cardinality label
 Grafana dashboards for error rates, p50/p95 latency, tool calls per request, confirmation
 volume, and safety denials.
 
+## Run the API in kind
+
+The agent API is separate from the demo-workload kustomization, because the local image
+must be built and loaded into kind before the Deployment can start.
+
+```bash
+# The namespace is needed before the namespaced ServiceAccount and Role.
+kubectl apply -f k8s/00-namespace.yaml
+
+# Build on the host and make the same image available to every kind node.
+docker build -t k8s-ops-agent:local .
+kind load docker-image k8s-ops-agent:local --name k8s-ops-agent
+
+# Deploy the ServiceAccount/RBAC, two API replicas, and the internal Service.
+kubectl apply -f k8s/rbac.yaml
+kubectl apply -f k8s/agent-deployment.yaml
+kubectl apply -f k8s/agent-service.yaml
+kubectl rollout status deployment/k8s-ops-agent -n ai-agent-demo
+kubectl get pods,service -n ai-agent-demo -l app.kubernetes.io/name=k8s-ops-agent
+```
+
+The ServiceAccount has a namespace-scoped `Role`, never `cluster-admin`: it can
+`get/list/watch` Pods, read `pods/log`, `get/list` Deployments, and patch only the
+`nginx-good` demo Deployment for restart. It has no Secret permission and no cluster-wide
+binding.
+
+To reach the ClusterIP Service from the host:
+
+```bash
+kubectl port-forward -n ai-agent-demo service/k8s-ops-agent 8000:80
+curl -s http://localhost:8000/health
+curl -s http://localhost:8000/health/ready
+```
+
+Verify the intended permission boundary:
+
+```bash
+kubectl auth can-i --as=system:serviceaccount:ai-agent-demo:k8s-ops-agent list pods -n ai-agent-demo
+kubectl auth can-i --as=system:serviceaccount:ai-agent-demo:k8s-ops-agent get pods/log -n ai-agent-demo
+kubectl auth can-i --as=system:serviceaccount:ai-agent-demo:k8s-ops-agent patch deployment/nginx-good -n ai-agent-demo
+kubectl auth can-i --as=system:serviceaccount:ai-agent-demo:k8s-ops-agent get secrets -n ai-agent-demo
+```
+
 The LLM is behind `LLMProvider.generate(...)`. Locally, `KAGENT_LLM_PROVIDER=fake` (the
 default) is a keyword-driven stand-in that drives the real tools with no API key.
 Tests inject `ScriptedLLMProvider` with a fixed list of responses. OpenAI is an adapter
