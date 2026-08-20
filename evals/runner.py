@@ -6,8 +6,11 @@ import argparse
 import asyncio
 import json
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel
 
 from app.agent.orchestrator import Agent
 from app.config import Settings
@@ -16,15 +19,16 @@ from app.llm.base import LLMProvider, LLMResponse, Message, ToolDefinition
 from app.llm.factory import build_provider
 from app.llm.fake import HeuristicLLMProvider
 from evals.fixtures import FixtureKnowledge, FixtureToolExecutor
-from evals.schemas import EvalCase, EvalCaseResult, EvalRun
+from evals.schemas import EvalCase, EvalCaseResult, EvalRun, TrajectoryEvent
 from evals.scoring import aggregate, score_case
 
 
 class RecordingLLMProvider(LLMProvider):
     """Record timing/counts without requiring a provider to expose internal telemetry."""
 
-    def __init__(self, provider: LLMProvider) -> None:
+    def __init__(self, provider: LLMProvider, events: list[TrajectoryEvent]) -> None:
         self._provider = provider
+        self._events = events
         self.name = provider.name
         self.latency_ms = 0.0
         self.turns = 0
@@ -39,15 +43,56 @@ class RecordingLLMProvider(LLMProvider):
     ) -> LLMResponse:
         started = time.perf_counter()
         try:
-            return await self._provider.generate(
+            response = await self._provider.generate(
                 messages=messages,
                 tools=tools,
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
+            self._events.append(
+                TrajectoryEvent(
+                    event="model_decision",
+                    summary="tool_calls" if response.tool_calls else "final_response",
+                    arguments={"tool_calls": [call.model_dump() for call in response.tool_calls]},
+                )
+            )
+            return response
         finally:
             self.turns += 1
             self.latency_ms += (time.perf_counter() - started) * 1000
+
+
+class RecordingFixtureExecutor:
+    """Decorates fixture tools with visible call/result trajectory events."""
+
+    def __init__(self, executor: FixtureToolExecutor, events: list[TrajectoryEvent]) -> None:
+        self._executor = executor
+        self._events = events
+
+    def __call__(self, name: str, arguments: Mapping[str, Any]) -> BaseModel:
+        values = dict(arguments)
+        self._events.append(TrajectoryEvent(event="tool_call", tool=name, arguments=values))
+        try:
+            result = self._executor(name, values)
+        except AppError as exc:
+            self._events.append(
+                TrajectoryEvent(
+                    event="tool_result",
+                    tool=name,
+                    outcome=exc.code.value,
+                    summary=exc.message,
+                )
+            )
+            raise
+        self._events.append(
+            TrajectoryEvent(
+                event="tool_result",
+                tool=name,
+                outcome="success",
+                summary=type(result).__name__,
+            )
+        )
+        return result
 
 
 async def run_case(
@@ -57,14 +102,16 @@ async def run_case(
     settings: Settings,
 ) -> EvalCaseResult:
     executor = FixtureToolExecutor(case.fixture)
-    recording_provider = RecordingLLMProvider(provider)
+    trajectory = [TrajectoryEvent(event="user_request", summary=case.user_input)]
+    recording_provider = RecordingLLMProvider(provider, trajectory)
+    recording_executor = RecordingFixtureExecutor(executor, trajectory)
     started = time.perf_counter()
     result = None
     error: AppError | None = None
     try:
         result = await Agent(
             llm=recording_provider,
-            execute=executor,
+            execute=recording_executor,
             settings=settings,
             knowledge=FixtureKnowledge(),  # type: ignore[arg-type]
         ).run(case.user_input)
@@ -72,8 +119,16 @@ async def run_case(
         error = exc
     total_ms = (time.perf_counter() - started) * 1000
     tools = [] if result is None else [item.model_dump(mode="json") for item in result.tools_used]
+    _append_unrecorded_invocations(trajectory, tools)
     answer = error.message if error is not None else (result.answer if result is not None else "")
     status = error.code.value if error is not None else (result.status.value if result else None)
+    trajectory.append(
+        TrajectoryEvent(
+            event="final_response",
+            outcome=status,
+            summary="error" if error is not None else "answer",
+        )
+    )
     scores, failures = score_case(
         case,
         answer=answer,
@@ -95,6 +150,7 @@ async def run_case(
         tool_latency_ms=round(tool_latency, 2),
         model_turns=recording_provider.turns,
         tool_calls=len(tools),
+        trajectory=trajectory,
     )
 
 
@@ -166,6 +222,36 @@ def main() -> None:
 
 def _average(values: Sequence[float]) -> float:
     return round(sum(values) / len(values), 2) if values else 0.0
+
+
+def _append_unrecorded_invocations(
+    trajectory: list[TrajectoryEvent], tools_used: Sequence[dict[str, Any]]
+) -> None:
+    """Capture adapter-blocked calls, such as confirmation-required mutations."""
+    recorded = {
+        (event.tool, json.dumps(event.arguments, sort_keys=True))
+        for event in trajectory
+        if event.event == "tool_call"
+    }
+    for invocation in tools_used:
+        key = (str(invocation["tool"]), json.dumps(invocation.get("arguments", {}), sort_keys=True))
+        if key in recorded:
+            continue
+        trajectory.extend(
+            [
+                TrajectoryEvent(
+                    event="tool_call",
+                    tool=key[0],
+                    arguments=dict(invocation.get("arguments", {})),
+                ),
+                TrajectoryEvent(
+                    event="tool_result",
+                    tool=key[0],
+                    outcome=str(invocation.get("outcome")),
+                    summary=invocation.get("summary"),
+                ),
+            ]
+        )
 
 
 if __name__ == "__main__":

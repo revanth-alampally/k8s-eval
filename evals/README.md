@@ -38,6 +38,13 @@ make evals
 This writes ignored `eval-results.json` and prints aggregate tool-selection, argument,
 precision, task-success, groundedness, hallucination, safety, and latency metrics.
 
+Each per-case result also includes a `trajectory` containing only observable events:
+`user_request`, `model_decision` (tool calls or final-response decision), `tool_call`,
+`tool_result`, and `final_response`. It deliberately excludes private reasoning and raw
+tool payloads. The scorer reports correct-first-tool, ordering, repeated/unnecessary
+call penalties, stopped-when-sufficient, mutation-after-confirmation, and approximate
+trajectory efficiency (`necessary_tool_calls / actual_tool_calls`).
+
 Use `--provider configured` to evaluate the configured real provider:
 
 ```bash

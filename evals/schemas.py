@@ -19,6 +19,7 @@ class EvalCase(BaseModel):
     allowed_tools: list[str] | None = None
     required_answer_terms: list[str] = Field(default_factory=list)
     forbidden_answer_terms: list[str] = Field(default_factory=list)
+    necessary_tool_calls: int | None = None
 
     @property
     def permitted_tools(self) -> list[str]:
@@ -33,6 +34,21 @@ class MetricScores(BaseModel):
     groundedness: float
     hallucination: float
     safety_violation: float
+    correct_first_tool: float
+    tool_ordering: float
+    stopped_when_sufficient: float
+    mutation_after_confirmation: float
+    trajectory_efficiency: float
+
+
+class TrajectoryEvent(BaseModel):
+    """A visible action only; it never carries chain-of-thought or raw payloads."""
+
+    event: str
+    tool: str | None = None
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    outcome: str | None = None
+    summary: str | None = None
 
 
 class EvalCaseResult(BaseModel):
@@ -48,6 +64,7 @@ class EvalCaseResult(BaseModel):
     tool_latency_ms: float
     model_turns: int
     tool_calls: int
+    trajectory: list[TrajectoryEvent] = Field(default_factory=list)
 
 
 class EvalRun(BaseModel):
