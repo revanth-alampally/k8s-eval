@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from app import __version__
+from app.agent.confirmation import ConfirmationStore
 from app.api.routes import agent, health
 from app.config import Settings, get_settings
 from app.errors import install_exception_handlers
@@ -57,6 +58,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.kubernetes = KubernetesClientProvider(settings)
     app.state.llm = build_provider(settings)
     app.state.knowledge = KnowledgeService(settings, repository_root=Path.cwd())
+    app.state.confirmations = ConfirmationStore(ttl_seconds=settings.confirmation_ttl_seconds)
 
     app.add_middleware(CorrelationIdMiddleware)
     install_exception_handlers(app)

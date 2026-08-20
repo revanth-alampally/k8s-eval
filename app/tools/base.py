@@ -9,7 +9,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from app.config import Settings
-from app.errors import MutationDisabledError, NamespaceNotAllowedError
+from app.errors import MutationDisabledError, NamespaceNotAllowedError, PermissionDeniedError
 from app.tools.schemas import ToolInput
 
 
@@ -32,6 +32,15 @@ def require_mutations_enabled(tool_name: str, settings: Settings) -> None:
     if settings.read_only_mode:
         raise MutationDisabledError(
             f"'{tool_name}' changes cluster state and the agent is in read-only mode.",
+            tool=tool_name,
+        )
+
+
+def require_mutating_tool_allowed(tool_name: str, settings: Settings) -> None:
+    """Only explicitly configured mutation names may cross the executor boundary."""
+    if tool_name not in settings.allowed_mutating_tools:
+        raise PermissionDeniedError(
+            f"Mutating tool '{tool_name}' is not allowlisted.",
             tool=tool_name,
         )
 

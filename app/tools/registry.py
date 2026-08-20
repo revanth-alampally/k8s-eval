@@ -17,7 +17,7 @@ from pydantic import BaseModel
 
 from app.config import Settings
 from app.errors import ToolNotFoundError
-from app.tools.base import ToolMetadata, ToolSpec
+from app.tools.base import ToolMetadata, ToolSpec, require_mutating_tool_allowed
 from app.tools.k8s.client import KubernetesClient
 from app.tools.k8s.diagnose import diagnose_pod
 from app.tools.k8s.mutate import restart_deployment
@@ -147,6 +147,8 @@ def execute_tool(
     """
     spec = get_tool(name, settings)
     args = parse_arguments(spec.input_model, **dict(arguments))
+    if spec.mutating:
+        require_mutating_tool_allowed(spec.name, settings)
     result = spec.handler(**args.model_dump(), client=client, settings=settings)
     return result
 

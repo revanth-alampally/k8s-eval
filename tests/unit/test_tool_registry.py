@@ -8,7 +8,12 @@ import pytest
 from kubernetes.client import V1PodList
 
 from app.config import Settings
-from app.errors import MutationDisabledError, ToolArgumentError, ToolNotFoundError
+from app.errors import (
+    MutationDisabledError,
+    PermissionDeniedError,
+    ToolArgumentError,
+    ToolNotFoundError,
+)
 from app.tools.k8s.client import KubernetesClient
 from app.tools.k8s.models import PodListResult, RestartDeploymentResult
 from app.tools.k8s.mutate import RESTART_ANNOTATION, restart_deployment
@@ -69,6 +74,17 @@ def test_restart_deployment_refuses_even_when_called_directly_in_read_only_mode(
 
     with pytest.raises(MutationDisabledError):
         restart_deployment("ai-agent-demo", "nginx-good", client=k8s_client, settings=read_only)
+
+    apps_api.patch_namespaced_deployment.assert_not_called()
+
+
+def test_restart_deployment_refuses_when_not_in_mutation_allowlist(
+    k8s_client: KubernetesClient, apps_api: MagicMock, settings: Settings
+) -> None:
+    blocked = settings.model_copy(update={"allowed_mutating_tools": []})
+
+    with pytest.raises(PermissionDeniedError):
+        restart_deployment("ai-agent-demo", "nginx-good", client=k8s_client, settings=blocked)
 
     apps_api.patch_namespaced_deployment.assert_not_called()
 

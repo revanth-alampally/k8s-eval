@@ -37,9 +37,27 @@ User
          └─ LLM provider             phrases the answer from tool results only
 ```
 
-Mutating requests short-circuit: the orchestrator returns `confirmation_required` with a
-description of the change and does **not** execute it. A later confirmation endpoint will
-apply the change; that is not implemented yet.
+Mutating requests short-circuit: the orchestrator returns `confirmation_required` with an
+opaque, single-use token and does **not** execute it. Redeem the exact capability on the
+same endpoint, from the same local session:
+
+```bash
+# First request: include a stable caller/session identifier.
+curl -H 'X-KAgent-Session-ID: local-user-1' \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Restart nginx-good."}' http://127.0.0.1:8000/v1/agent
+
+# Second request: send "Yes." and the returned pending_confirmation.confirmation_token.
+curl -H 'X-KAgent-Session-ID: local-user-1' \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Yes.","confirmation_token":"<opaque-token>"}' \
+  http://127.0.0.1:8000/v1/agent
+```
+
+The capability is process-local, expires after `KAGENT_CONFIRMATION_TTL_SECONDS`, is
+bound to the session and exact validated tool arguments, and is consumed once. Restarting
+`nginx-good` never authorizes restarting `redis`. Restarting the process invalidates
+outstanding confirmations.
 
 ## Layout
 
@@ -168,6 +186,8 @@ The ones that matter for safety:
 - `KAGENT_ALLOWED_NAMESPACES` — hard allowlist; tools refuse anything outside it.
 - `KAGENT_READ_ONLY_MODE` — kill switch; mutating tools are not registered at all.
 - `KAGENT_REQUIRE_CONFIRMATION` — gate mutations behind an explicit token.
+- `KAGENT_ALLOWED_MUTATING_TOOLS` — explicit mutation capability allowlist; defaults to
+  `restart_deployment`.
 - `KAGENT_LLM_PROVIDER` — `fake` (default, no API key) or `openai`.
 - `KAGENT_MAX_TOOL_CALLS_PER_REQUEST` — bounds the agent loop.
 - `KAGENT_RAG_CORPUS_PATHS` — opt-in repository-relative Markdown files (defaults to

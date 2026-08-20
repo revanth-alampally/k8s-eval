@@ -15,7 +15,11 @@ from datetime import UTC, datetime
 
 from app.config import Settings
 from app.observability.instrumentation import track_operation
-from app.tools.base import require_allowed_namespace, require_mutations_enabled
+from app.tools.base import (
+    require_allowed_namespace,
+    require_mutating_tool_allowed,
+    require_mutations_enabled,
+)
 from app.tools.k8s.client import KubernetesClient, translate_api_errors
 from app.tools.k8s.models import RestartDeploymentResult
 from app.tools.schemas import RestartDeploymentInput, parse_arguments
@@ -42,6 +46,7 @@ def restart_deployment(
     )
     require_allowed_namespace(args.namespace, settings)
     require_mutations_enabled("restart_deployment", settings)
+    require_mutating_tool_allowed("restart_deployment", settings)
 
     restarted_at = datetime.now(UTC)
     patch = {

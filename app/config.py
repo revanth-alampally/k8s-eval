@@ -66,6 +66,8 @@ class Settings(BaseSettings):
     read_only_mode: bool = False
     require_confirmation: bool = True
     confirmation_ttl_seconds: int = 300
+    # A second explicit boundary in addition to the static tool registry.
+    allowed_mutating_tools: list[str] = Field(default_factory=lambda: ["restart_deployment"])
 
     # --- LLM / agent ------------------------------------------------------
     llm_provider: LLMProviderName = LLMProviderName.FAKE
@@ -100,6 +102,13 @@ class Settings(BaseSettings):
     def _split_corpus_paths(cls, value: object) -> object:
         if isinstance(value, str):
             return [Path(item.strip()) for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("allowed_mutating_tools", mode="before")
+    @classmethod
+    def _split_mutating_tools(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
         return value
 
     @field_validator("log_level")
