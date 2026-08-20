@@ -35,10 +35,11 @@ def test_agent_endpoint_returns_the_public_contract(client: TestClient) -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert body["answer"] == "All reported pods are healthy."
+    assert body["answer"].startswith("Observed:\nAll reported pods are healthy.")
+    assert "Interpretation:" in body["answer"]
     assert body["request_id"] == "trace-agent-1"
     assert body["status"] == "success"
-    assert body["tools_used"] == []
+    assert [item["tool"] for item in body["tools_used"]] == ["list_pods"]
     assert set(body) <= {"answer", "request_id", "status", "tools_used", "pending_confirmation"}
     assert body.get("pending_confirmation") is None
     assert response.headers[CORRELATION_ID_HEADER] == "trace-agent-1"

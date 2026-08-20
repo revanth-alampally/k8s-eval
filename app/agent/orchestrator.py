@@ -18,6 +18,12 @@ from langchain_core.messages import AIMessage
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel
 
+from app.agent.grounding import (
+    INSUFFICIENT_EVIDENCE,
+    classify_live_state_request,
+    unsupported_resource,
+    unsupported_resource_answer,
+)
 from app.agent.langchain_model import ProviderChatModel
 from app.agent.prompts import system_prompt
 from app.agent.schemas import (
@@ -98,9 +104,35 @@ class Agent:
             provider=self._llm.name,
             max_tool_calls=self._settings.max_tool_calls_per_request,
         ) as log:
+            unsupported = unsupported_resource(message)
+            if unsupported is not None:
+                return AgentResult(
+                    answer=unsupported_resource_answer(unsupported),
+                    status=AgentStatus.SUCCESS,
+                )
+
+            live_request = classify_live_state_request(message)
+            agent_message = message
+            if live_request is not None:
+                evidence = await runtime.acquire_required_evidence(
+                    registry[live_request.required_tool]
+                )
+                if not runtime.has_successful_kubernetes_tool:
+                    return AgentResult(
+                        answer=INSUFFICIENT_EVIDENCE,
+                        status=AgentStatus.INCOMPLETE,
+                        tools_used=runtime.invocations,
+                    )
+                # The full payload is request-local: it is passed only to the planner
+                # and never to logs or the HTTP response.
+                agent_message = (
+                    f"{message}\n\n"
+                    f"Authoritative Kubernetes evidence from "
+                    f"`{live_request.required_tool}`:\n{evidence}"
+                )
             try:
                 state = await agent.ainvoke(
-                    {"messages": [{"role": "user", "content": message}]},
+                    {"messages": [{"role": "user", "content": agent_message}]},
                     config={"recursion_limit": (self._settings.max_tool_calls_per_request * 2) + 3},
                 )
             except Exception as exc:
@@ -145,6 +177,8 @@ class Agent:
                 )
 
             answer = _final_answer(state.get("messages", []))
+            if live_request is not None:
+                answer = _format_grounded_answer(answer)
             status = AgentStatus.INCOMPLETE if runtime.limit_reached else AgentStatus.SUCCESS
             log["tool_calls"] = len(runtime.invocations)
             log["status"] = status.value
@@ -169,6 +203,20 @@ class _ToolRuntime:
         self.invocations: list[ToolInvocation] = []
         self.pending: PendingConfirmation | None = None
         self.limit_reached = False
+
+    @property
+    def has_successful_kubernetes_tool(self) -> bool:
+        return any(
+            invocation.tool != "search_knowledge" and invocation.outcome is ToolOutcome.SUCCESS
+            for invocation in self.invocations
+        )
+
+    async def acquire_required_evidence(self, spec: ToolSpec) -> str:
+        """Run the baseline read tool that policy requires for live state."""
+        return await self._invoke_registered(
+            spec,
+            {"namespace": self._settings.default_namespace},
+        )
 
     def tools(self) -> list[StructuredTool]:
         tools = [self._registered_tool(spec) for spec in self._registry.values()]
@@ -326,7 +374,16 @@ def _final_answer(messages: list[Any]) -> str:
             answer = message.content.strip()
             if answer:
                 return answer
-    return "I do not have enough information to answer that, and I will not guess."
+    return INSUFFICIENT_EVIDENCE
+
+
+def _format_grounded_answer(answer: str) -> str:
+    """Require readers to see facts and inference as separate categories."""
+    if "Observed:" in answer and ("Likely cause:" in answer or "Interpretation:" in answer):
+        return answer
+    return (
+        f"Observed:\n{answer}\n\nInterpretation:\nNo additional inference beyond the tool results."
+    )
 
 
 def _error_payload(code: str, message: str) -> str:

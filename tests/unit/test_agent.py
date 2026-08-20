@@ -106,7 +106,6 @@ async def test_agent_runs_read_tools_and_answers_from_their_results(
 ) -> None:
     llm = ScriptedLLMProvider(
         [
-            _call("list_pods", namespace=NAMESPACE),
             _call("diagnose_pod", namespace=NAMESPACE, pod_name="nginx-missing-ghi789"),
             _say("nginx-missing is in ImagePullBackOff; no container ever started."),
         ]
@@ -133,6 +132,52 @@ async def test_agent_runs_read_tools_and_answers_from_their_results(
     assert result.tools_used[-1].summary == (
         "status=ImagePullBackOff, logs_available=False, signals=1"
     )
+
+
+async def test_live_question_forces_kubernetes_evidence_before_model_answer(
+    settings: Settings,
+) -> None:
+    executor = RecordingExecutor({"list_pods": _pods()})
+    llm = ScriptedLLMProvider([_say("All pods are healthy from memory.")])
+
+    result = await Agent(llm=llm, execute=executor, settings=settings).run("What pods are running?")
+
+    assert executor.calls == [("list_pods", {"namespace": NAMESPACE})]
+    assert result.tools_used[0].tool == "list_pods"
+    assert result.answer.startswith("Observed:")
+    assert "Interpretation:" in result.answer
+
+
+async def test_failed_live_tool_never_becomes_a_factual_claim(settings: Settings) -> None:
+    class FailingExecutor(RecordingExecutor):
+        def __call__(self, name: str, arguments: Mapping[str, Any]) -> BaseModel:
+            self.calls.append((name, dict(arguments)))
+            raise ToolArgumentError("Kubernetes query failed.", tool_input="ListPodsInput")
+
+    executor = FailingExecutor()
+    llm = ScriptedLLMProvider([_say("There are no unhealthy pods.")])
+
+    result = await Agent(llm=llm, execute=executor, settings=settings).run(
+        "Are any pods unhealthy?"
+    )
+
+    assert result.answer == "I don't have enough cluster evidence to determine the cause."
+    assert result.status is AgentStatus.INCOMPLETE
+    assert result.tools_used[0].outcome is ToolOutcome.ERROR
+    assert llm.calls == []
+
+
+async def test_unsupported_live_resource_does_not_substitute_pod_data(settings: Settings) -> None:
+    executor = RecordingExecutor()
+    llm = ScriptedLLMProvider([_say("Nodes are healthy.")])
+
+    result = await Agent(llm=llm, execute=executor, settings=settings).run(
+        "What is the node status?"
+    )
+
+    assert result.answer == "I don't have a tool capable of answering questions about node."
+    assert executor.calls == []
+    assert llm.calls == []
 
 
 async def test_agent_can_retrieve_docs_without_cluster_executor_access(settings: Settings) -> None:
@@ -228,8 +273,11 @@ async def test_unknown_tool_is_rejected_by_langchain_before_executor_access(
     assert result.status is AgentStatus.SUCCESS
     # The LangChain tool node rejects names that are not registered; the executor
     # never sees a shell-like escape hatch.
-    assert [item.tool for item in result.tools_used] == ["list_pods"]
-    assert executor.calls == [("list_pods", {"namespace": NAMESPACE})]
+    assert [item.tool for item in result.tools_used] == ["list_pods", "list_pods"]
+    assert executor.calls == [
+        ("list_pods", {"namespace": NAMESPACE}),
+        ("list_pods", {"namespace": NAMESPACE}),
+    ]
 
 
 async def test_invalid_arguments_do_not_reach_the_cluster(settings: Settings) -> None:

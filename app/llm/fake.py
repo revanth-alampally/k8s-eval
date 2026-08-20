@@ -160,6 +160,10 @@ def _last_user_message(messages: Sequence[Message]) -> str:
 def _tool_results(messages: Sequence[Message]) -> list[tuple[str, Any]]:
     results: list[tuple[str, Any]] = []
     for message in messages:
+        if message.role in {Role.SYSTEM, Role.USER} and message.content:
+            evidence = _grounding_evidence(message.content)
+            if evidence is not None:
+                results.append(evidence)
         if message.role is not Role.TOOL or not message.content:
             continue
         try:
@@ -168,6 +172,21 @@ def _tool_results(messages: Sequence[Message]) -> list[tuple[str, Any]]:
             payload = message.content
         results.append((message.name or "unknown", payload))
     return results
+
+
+def _grounding_evidence(content: str) -> tuple[str, Any] | None:
+    marker = "Authoritative Kubernetes evidence from `"
+    if marker not in content:
+        return None
+    before, _, remainder = content.partition(marker)
+    del before
+    tool, separator, payload = remainder.partition("`:\n")
+    if not separator:
+        return None
+    try:
+        return tool, json.loads(payload)
+    except json.JSONDecodeError:
+        return None
 
 
 def _first_name(question: str) -> str | None:
