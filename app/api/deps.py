@@ -7,6 +7,8 @@ from typing import Annotated
 from fastapi import Depends, Request
 
 from app.config import Settings, get_settings
+from app.knowledge.service import KnowledgeService
+from app.llm.base import LLMProvider
 from app.tools.k8s.client import KubernetesClientProvider
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
@@ -18,4 +20,18 @@ def get_client_provider(request: Request) -> KubernetesClientProvider:
     return provider
 
 
+def get_llm_provider(request: Request) -> LLMProvider:
+    provider = request.app.state.llm
+    assert isinstance(provider, LLMProvider)
+    return provider
+
+
+def get_knowledge_service(request: Request) -> KnowledgeService:
+    service = request.app.state.knowledge
+    assert isinstance(service, KnowledgeService)
+    return service
+
+
 ClientProviderDep = Annotated[KubernetesClientProvider, Depends(get_client_provider)]
+LLMProviderDep = Annotated[LLMProvider, Depends(get_llm_provider)]
+KnowledgeServiceDep = Annotated[KnowledgeService, Depends(get_knowledge_service)]

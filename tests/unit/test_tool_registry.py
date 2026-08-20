@@ -12,7 +12,7 @@ from app.errors import MutationDisabledError, ToolArgumentError, ToolNotFoundErr
 from app.tools.k8s.client import KubernetesClient
 from app.tools.k8s.models import PodListResult, RestartDeploymentResult
 from app.tools.k8s.mutate import RESTART_ANNOTATION, restart_deployment
-from app.tools.registry import build_registry, execute_tool, get_tool, tool_schemas
+from app.tools.registry import build_registry, execute_tool, get_tool, tool_metadata
 from tests.unit.factories import NAMESPACE, deployment, healthy_pod
 
 EXPECTED_TOOLS = {
@@ -144,9 +144,15 @@ def test_execute_tool_rejects_an_unknown_tool(
     assert "list_pods" in caught.value.details["available_tools"]
 
 
-def test_tool_schemas_are_json_serialisable_and_flag_mutation(settings: Settings) -> None:
-    schemas = {schema["name"]: schema for schema in tool_schemas(settings)}
+def test_tool_metadata_is_json_serialisable_and_flags_mutation(settings: Settings) -> None:
+    by_name = {item.name: item for item in tool_metadata(settings)}
 
-    assert schemas["restart_deployment"]["mutating"] is True
-    assert schemas["list_pods"]["mutating"] is False
-    assert "namespace" in schemas["list_pods"]["parameters"]["properties"]
+    restart = by_name["restart_deployment"]
+    assert restart.read_only is False
+    assert restart.requires_confirmation is True
+    assert "deployment_name" in restart.input_schema["properties"]
+
+    listing = by_name["list_pods"]
+    assert listing.read_only is True
+    assert listing.requires_confirmation is False
+    assert "namespace" in listing.input_schema["properties"]

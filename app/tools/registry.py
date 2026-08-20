@@ -17,7 +17,7 @@ from pydantic import BaseModel
 
 from app.config import Settings
 from app.errors import ToolNotFoundError
-from app.tools.base import ToolSpec
+from app.tools.base import ToolMetadata, ToolSpec
 from app.tools.k8s.client import KubernetesClient
 from app.tools.k8s.diagnose import diagnose_pod
 from app.tools.k8s.mutate import restart_deployment
@@ -103,7 +103,8 @@ _TOOL_SPECS: tuple[ToolSpec, ...] = (
         ),
         input_model=RestartDeploymentInput,
         handler=restart_deployment,
-        mutating=True,
+        read_only=False,
+        requires_confirmation=True,
     ),
 )
 
@@ -150,14 +151,6 @@ def execute_tool(
     return result
 
 
-def tool_schemas(settings: Settings) -> list[dict[str, Any]]:
-    """Tool definitions for later use as LLM function-calling schemas."""
-    return [
-        {
-            "name": spec.name,
-            "description": spec.description,
-            "parameters": spec.json_schema(),
-            "mutating": spec.mutating,
-        }
-        for spec in build_registry(settings).values()
-    ]
+def tool_metadata(settings: Settings) -> list[ToolMetadata]:
+    """Describe the available tools, for the agent's tool definitions and for callers."""
+    return [spec.metadata() for spec in build_registry(settings).values()]

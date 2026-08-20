@@ -36,21 +36,46 @@ def require_mutations_enabled(tool_name: str, settings: Settings) -> None:
         )
 
 
+class ToolMetadata(BaseModel):
+    """The public description of a tool: what the model is offered, and what the API
+    can list. Carries no handler, so it is safe to serialise anywhere."""
+
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+    read_only: bool
+    requires_confirmation: bool
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     """Everything needed to describe, validate and run one tool.
 
-    ``mutating`` is a static property of the tool rather than something inferred from
-    its arguments at call time. That is what makes the confirmation gate reliable: the
-    orchestrator can tell whether an operation changes state before running it.
+    ``read_only`` and ``requires_confirmation`` are static properties of the tool rather
+    than something inferred from its arguments at call time. That is what makes the
+    confirmation gate reliable: the orchestrator knows whether an operation changes
+    state before it runs, without parsing anything.
     """
 
     name: str
     description: str
     input_model: type[ToolInput]
     handler: Callable[..., BaseModel]
-    mutating: bool = False
+    read_only: bool = True
+    requires_confirmation: bool = False
 
-    def json_schema(self) -> dict[str, Any]:
-        """Argument schema, for later use as an LLM tool definition."""
+    @property
+    def mutating(self) -> bool:
+        return not self.read_only
+
+    def input_schema(self) -> dict[str, Any]:
         return self.input_model.model_json_schema()
+
+    def metadata(self) -> ToolMetadata:
+        return ToolMetadata(
+            name=self.name,
+            description=self.description,
+            input_schema=self.input_schema(),
+            read_only=self.read_only,
+            requires_confirmation=self.requires_confirmation,
+        )

@@ -7,7 +7,7 @@ each with a Pydantic argument model that is validated before anything is execute
 There is no tool that takes a command string, and no tool that shells out.
 """
 
-from app.tools.base import ToolSpec
+from app.tools.base import ToolMetadata, ToolSpec
 from app.tools.k8s.client import KubernetesClient, KubernetesClientProvider
 from app.tools.k8s.diagnose import diagnose_pod
 from app.tools.k8s.mutate import restart_deployment
@@ -18,11 +18,12 @@ from app.tools.k8s.read import (
     list_deployments,
     list_pods,
 )
-from app.tools.registry import build_registry, execute_tool, get_tool, tool_schemas
+from app.tools.registry import build_registry, execute_tool, get_tool, tool_metadata
 
 __all__ = [
     "KubernetesClient",
     "KubernetesClientProvider",
+    "ToolMetadata",
     "ToolSpec",
     "build_registry",
     "describe_pod",
@@ -34,5 +35,5 @@ __all__ = [
     "list_deployments",
     "list_pods",
     "restart_deployment",
-    "tool_schemas",
+    "tool_metadata",
 ]

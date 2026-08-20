@@ -27,6 +27,13 @@ class LogFormat(StrEnum):
     CONSOLE = "console"
 
 
+class LLMProviderName(StrEnum):
+    # Keyword-driven stand-in: runs the real tools, needs no API key.
+    FAKE = "fake"
+    HEURISTIC = "heuristic"
+    OPENAI = "openai"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="KAGENT_",
@@ -61,6 +68,7 @@ class Settings(BaseSettings):
     confirmation_ttl_seconds: int = 300
 
     # --- LLM / agent ------------------------------------------------------
+    llm_provider: LLMProviderName = LLMProviderName.FAKE
     llm_model: str = "gpt-4o-mini"
     llm_api_key: SecretStr | None = None
     llm_timeout_seconds: int = 30
@@ -69,11 +77,29 @@ class Settings(BaseSettings):
     max_tool_calls_per_request: int = 5
     max_log_lines: int = 200
 
+    # --- Knowledge / RAG --------------------------------------------------
+    rag_enabled: bool = True
+    # Repository-relative Markdown roots. System and global Cursor skills are not
+    # indexed unless explicitly added here.
+    rag_corpus_paths: list[Path] = Field(default_factory=lambda: [Path("README.md")])
+    rag_persist_directory: Path = Path(".data/chroma")
+    rag_embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    rag_chunk_size: int = 1800
+    rag_chunk_overlap: int = 240
+    rag_top_k: int = 4
+
     @field_validator("allowed_namespaces", mode="before")
     @classmethod
     def _split_namespaces(cls, value: object) -> object:
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("rag_corpus_paths", mode="before")
+    @classmethod
+    def _split_corpus_paths(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [Path(item.strip()) for item in value.split(",") if item.strip()]
         return value
 
     @field_validator("log_level")
@@ -86,6 +112,10 @@ class Settings(BaseSettings):
 
     def is_namespace_allowed(self, namespace: str) -> bool:
         return namespace in self.allowed_namespaces
+
+    @property
+    def default_namespace(self) -> str:
+        return self.allowed_namespaces[0] if self.allowed_namespaces else "default"
 
 
 @lru_cache(maxsize=1)

@@ -28,17 +28,18 @@ Everything else follows from that:
 
 ```
 User
- └─ POST /v1/chat                    FastAPI: validate, assign correlation ID
-     └─ Agent orchestrator           bounded loop, max_tool_calls_per_request
-         ├─ LLM planner              chooses a tool + arguments (no cluster facts)
+ └─ POST /v1/agent                   FastAPI: validate, assign correlation ID
+     └─ LangChain orchestrator       bounded loop, max_tool_calls_per_request
+         ├─ LLM provider             chooses an answer, knowledge search, or tool (no cluster access)
+         ├─ Knowledge search          Chroma over configured repository Markdown only
          ├─ Tool registry            resolves name, validates args, checks namespace
          │   └─ Kubernetes tools     deterministic calls to the Kubernetes API
-         └─ LLM summariser           phrases the answer from tool results only
+         └─ LLM provider             phrases the answer from tool results only
 ```
 
 Mutating requests short-circuit: the orchestrator returns `confirmation_required` with a
-token and a plain-English description of the change. The client re-submits the token to
-`POST /v1/confirmations/{token}` to actually apply it.
+description of the change and does **not** execute it. A later confirmation endpoint will
+apply the change; that is not implemented yet.
 
 ## Layout
 
@@ -53,9 +54,20 @@ app/
 │   ├── deps.py              shared dependencies (settings injection)
 │   └── routes/
 │       ├── health.py        liveness + readiness
-│       ├── chat.py          POST /v1/chat                      (planned)
-│       └── confirmations.py POST /v1/confirmations/{token}     (planned)
-├── agent/                   planner, orchestrator, prompts     (planned)
+│       └── agent.py         POST /v1/agent
+├── agent/
+│   ├── schemas.py           public request/response; no chain-of-thought
+│   ├── prompts.py           the policy the model is asked to follow
+│   ├── langchain_model.py   provider-neutral LLMProvider → LangChain bridge
+│   └── orchestrator.py      LangChain planner + typed safe tool adapters
+├── knowledge/
+│   ├── service.py           repository-bound Markdown loader + Chroma retrieval
+│   └── index.py             explicit `make rag-index` entry point
+├── llm/
+│   ├── base.py              LLMProvider.generate(...) — vendor-neutral
+│   ├── fake.py              ScriptedLLMProvider (tests) + HeuristicLLMProvider (local)
+│   ├── factory.py           settings → provider
+│   └── openai_provider.py   optional OpenAI adapter
 ├── tools/
 │   ├── base.py              ToolSpec, namespace and mutation guards
 │   ├── schemas.py           argument models + Kubernetes name validation
@@ -88,9 +100,10 @@ scripts/                     demo-up.sh, demo-down.sh, demo-status.sh
 
 ### Why the layers are split this way
 
-- **`tools/` has no LLM and `agent/` has no Kubernetes client.** The tool layer is
-  ordinary Python you can unit test with a fake API client; the agent layer can be
-  tested with a fake tool registry. Neither test needs both halves.
+- **`tools/` has no LLM and `agent/` has no Kubernetes client.** The orchestrator calls an
+  injected executor. Tests of the loop use a fake executor and a scripted model; tests of
+  the tools use a fake API client. Neither needs both halves, and the model cannot be
+  handed a cluster handle even by accident.
 - **`config.py` owns the safety switches** (`read_only_mode`, `allowed_namespaces`,
   `require_confirmation`) so guardrails are one grep away, not scattered through
   handlers.
@@ -103,7 +116,7 @@ scripts/                     demo-up.sh, demo-down.sh, demo-status.sh
 
 ```bash
 make install          # create .venv and install the project
-cp .env.example .env  # then set KAGENT_LLM_API_KEY
+cp .env.example .env  # optional; default LLM provider is the local fake
 make run              # http://127.0.0.1:8000/docs
 ```
 
@@ -155,7 +168,12 @@ The ones that matter for safety:
 - `KAGENT_ALLOWED_NAMESPACES` — hard allowlist; tools refuse anything outside it.
 - `KAGENT_READ_ONLY_MODE` — kill switch; mutating tools are not registered at all.
 - `KAGENT_REQUIRE_CONFIRMATION` — gate mutations behind an explicit token.
+- `KAGENT_LLM_PROVIDER` — `fake` (default, no API key) or `openai`.
 - `KAGENT_MAX_TOOL_CALLS_PER_REQUEST` — bounds the agent loop.
+- `KAGENT_RAG_CORPUS_PATHS` — opt-in repository-relative Markdown files (defaults to
+  `README.md`); paths outside this project, including Cursor/system skills, are refused.
+- `KAGENT_RAG_PERSIST_DIRECTORY` — ignored local Chroma index path (defaults to
+  `.data/chroma`).
 
 ## Development
 
@@ -164,7 +182,16 @@ make test    # pytest
 make lint    # ruff + mypy
 make fmt     # ruff format
 make check   # everything the pre-commit hook runs
+make rag-index  # download the local embedding model if needed and refresh Chroma
 ```
+
+### Knowledge retrieval
+
+`search_knowledge` answers runbook-style questions from the configured project
+documentation. Its local SentenceTransformers model (`all-MiniLM-L6-v2`) is downloaded
+on first index/search, so the first `make rag-index` requires network access. Retrieved
+documentation is guidance, not live cluster state: current pods, events, logs, and
+deployment changes still require a typed Kubernetes tool call.
 
 ### Pre-commit hook
 
@@ -253,10 +280,10 @@ empty evidence would invite an answer about a pod that was never there.
   the Kubernetes naming rules, so `nginx; rm -rf /` fails at the schema, not the API.
   `extra="forbid"` means a hallucinated argument is an error rather than being ignored.
 - **Namespaces are allowlisted.** Checked inside every tool, not once at the edge.
-- **Mutation is a static property.** `restart_deployment` is flagged `mutating=True`, so
-  the confirmation gate can be applied before execution rather than inferred from a
-  string. In `read_only_mode` it is not registered at all, *and* it re-checks the flag
-  itself.
+- **Mutation is a static property.** `restart_deployment` is `read_only=false` and
+  `requires_confirmation=true`, so the confirmation gate can be applied before execution
+  rather than inferred from a string. In `read_only_mode` it is not registered at all,
+  *and* it re-checks the flag itself.
 - **Failures are typed.** `resource_not_found`, `permission_denied`, `cluster_timeout`,
   `cluster_unavailable`, `tool_argument_invalid`, `logs_unavailable`,
   `namespace_not_allowed`. No `ApiException` escapes the package. The agent can tell
@@ -268,10 +295,45 @@ empty evidence would invite an answer about a pod that was never there.
 - **Everything is timed and logged.** Each call emits `operation`, `outcome` and
   `duration_ms`. Log *content* is never logged — only its line count.
 
+## The agent
+
+`POST /v1/agent` is the only way to ask a question. The model never receives a
+Kubernetes client: it returns a tool name and arguments, the orchestrator authorises the
+call against the registry, a typed tool talks to the cluster, and the model is shown
+the result. That is the entire loop, bounded by `KAGENT_MAX_TOOL_CALLS_PER_REQUEST`.
+
+```bash
+curl -s localhost:8000/v1/agent \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Why is nginx-missing failing?"}'
+```
+
+```json
+{
+  "answer": "nginx-missing is in ImagePullBackOff; no container ever started.",
+  "request_id": "...",
+  "status": "success",
+  "tools_used": [
+    {"tool": "list_pods", "arguments": {"namespace": "ai-agent-demo"}, "outcome": "success", "duration_ms": 12.4, "summary": "5 pods, 2 unhealthy"},
+    {"tool": "diagnose_pod", "arguments": {"namespace": "ai-agent-demo", "pod_name": "nginx-missing-..."}, "outcome": "success", "duration_ms": 18.1, "summary": "status=ImagePullBackOff, logs_available=False, signals=8"}
+  ]
+}
+```
+
+`tools_used` is an audit trail, not a dump of cluster state. Full tool payloads are
+logged at debug, keyed by `request_id`. Chain-of-thought is not a field on the response
+and is dropped in the provider adapter if a vendor emits it.
+
+The LLM is behind `LLMProvider.generate(...)`. Locally, `KAGENT_LLM_PROVIDER=fake` (the
+default) is a keyword-driven stand-in that drives the real tools with no API key.
+Tests inject `ScriptedLLMProvider` with a fixed list of responses. OpenAI is an adapter
+behind the same interface (`KAGENT_LLM_PROVIDER=openai`); Anthropic or Gemini would be
+another adapter, not a change to the agent.
+
 ## Status
 
 Implemented: configuration, structured logging, correlation IDs, error taxonomy,
-FastAPI skeleton, health endpoints (readiness probes the real cluster), and the full
-Kubernetes tool layer including `diagnose_pod`, with 81 unit tests.
+FastAPI skeleton, health endpoints, Kubernetes tools including `diagnose_pod`, and the
+agent loop behind `POST /v1/agent`.
 
-Next: agent loop → `/v1/chat` → confirmation flow for mutations → AI evals.
+Next: confirmation redemption for mutations → AI evals.
