@@ -60,6 +60,7 @@ class AgentRequest(BaseModel):
 class AgentResponse(BaseModel):
     answer: str
     request_id: str
+    trace_id: str = ""
     status: AgentStatus
     tools_used: list[ToolInvocation] = Field(default_factory=list)
     pending_confirmation: PendingConfirmation | None = None

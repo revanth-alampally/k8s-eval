@@ -17,6 +17,7 @@ from app.knowledge.service import KnowledgeService
 from app.llm.factory import build_provider
 from app.middleware import CorrelationIdMiddleware
 from app.observability.logging import configure_logging, get_logger
+from app.observability.metrics import MetricsRegistry
 from app.tools.k8s.client import KubernetesClientProvider
 from app.tools.registry import build_registry
 
@@ -59,6 +60,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.llm = build_provider(settings)
     app.state.knowledge = KnowledgeService(settings, repository_root=Path.cwd())
     app.state.confirmations = ConfirmationStore(ttl_seconds=settings.confirmation_ttl_seconds)
+    app.state.metrics = MetricsRegistry()
 
     app.add_middleware(CorrelationIdMiddleware)
     install_exception_handlers(app)

@@ -42,7 +42,8 @@ from app.errors import (
 )
 from app.knowledge.service import KnowledgeService
 from app.llm.base import LLMProvider
-from app.observability.instrumentation import track_operation
+from app.observability.instrumentation import emit_agent_event, track_operation
+from app.observability.metrics import MetricsRegistry
 from app.tools.base import ToolSpec
 from app.tools.registry import build_registry
 
@@ -78,11 +79,13 @@ class Agent:
         execute: ToolExecutor,
         settings: Settings,
         knowledge: KnowledgeService | None = None,
+        metrics: MetricsRegistry | None = None,
     ) -> None:
         self._llm = llm
         self._execute = execute
         self._settings = settings
         self._knowledge = knowledge
+        self._metrics = metrics or MetricsRegistry()
 
     async def run(self, message: str) -> AgentResult:
         registry = build_registry(self._settings)
@@ -91,6 +94,7 @@ class Agent:
             execute=self._execute,
             knowledge=self._knowledge,
             settings=self._settings,
+            metrics=self._metrics,
         )
         tools = runtime.tools()
         agent = create_agent(
@@ -131,6 +135,7 @@ class Agent:
                     f"`{live_request.required_tool}`:\n{evidence}"
                 )
             try:
+                emit_agent_event(self._metrics, "agent.model_call", provider=self._llm.name)
                 state = await agent.ainvoke(
                     {"messages": [{"role": "user", "content": agent_message}]},
                     config={"recursion_limit": (self._settings.max_tool_calls_per_request * 2) + 3},
@@ -195,11 +200,13 @@ class _ToolRuntime:
         execute: ToolExecutor,
         knowledge: KnowledgeService | None,
         settings: Settings,
+        metrics: MetricsRegistry,
     ) -> None:
         self._registry = registry
         self._execute = execute
         self._knowledge = knowledge
         self._settings = settings
+        self._metrics = metrics
         self.invocations: list[ToolInvocation] = []
         self.pending: PendingConfirmation | None = None
         self.limit_reached = False
@@ -249,6 +256,14 @@ class _ToolRuntime:
             return _error_payload("agent_stopped", "No further tools may run for this request.")
 
         if spec.requires_confirmation and self._settings.require_confirmation:
+            emit_agent_event(
+                self._metrics,
+                "agent.confirmation_requested",
+                tool=spec.name,
+                outcome="blocked",
+                mutating=True,
+            )
+            self._metrics.increment("confirmation_requests_total", tool=spec.name)
             self.pending = PendingConfirmation(
                 tool=spec.name,
                 arguments=dict(arguments),
@@ -271,12 +286,38 @@ class _ToolRuntime:
             raise _ToolBudgetExceeded
 
         started = time.perf_counter()
+        emit_agent_event(
+            self._metrics, "agent.tool_selected", tool=spec.name, mutating=spec.mutating
+        )
+        emit_agent_event(
+            self._metrics, "agent.tool_started", tool=spec.name, mutating=spec.mutating
+        )
+        self._metrics.increment("tool_calls_total", tool=spec.name)
         try:
             result = await anyio.to_thread.run_sync(self._execute, spec.name, arguments)
-        except (ClusterUnavailableError, ClusterTimeoutError):
+        except (ClusterUnavailableError, ClusterTimeoutError) as exc:
+            duration = _elapsed_ms(started)
+            emit_agent_event(
+                self._metrics,
+                "agent.tool_failed",
+                tool=spec.name,
+                error_code=exc.code.value,
+                duration_ms=duration,
+            )
+            self._metrics.increment("tool_errors_total", tool=spec.name, error_code=exc.code.value)
+            self._metrics.observe("tool_latency_seconds", duration / 1000)
             raise
         except AppError as exc:
             duration = _elapsed_ms(started)
+            emit_agent_event(
+                self._metrics,
+                "agent.tool_failed",
+                tool=spec.name,
+                error_code=exc.code.value,
+                duration_ms=duration,
+            )
+            self._metrics.increment("tool_errors_total", tool=spec.name, error_code=exc.code.value)
+            self._metrics.observe("tool_latency_seconds", duration / 1000)
             self.invocations.append(
                 ToolInvocation(
                     tool=spec.name,
@@ -290,12 +331,21 @@ class _ToolRuntime:
             return _error_payload(exc.code.value, exc.message)
 
         payload = result.model_dump(mode="json")
+        duration = _elapsed_ms(started)
+        emit_agent_event(
+            self._metrics,
+            "agent.tool_completed",
+            tool=spec.name,
+            outcome="success",
+            duration_ms=duration,
+        )
+        self._metrics.observe("tool_latency_seconds", duration / 1000)
         self.invocations.append(
             ToolInvocation(
                 tool=spec.name,
                 arguments=dict(arguments),
                 outcome=ToolOutcome.SUCCESS,
-                duration_ms=_elapsed_ms(started),
+                duration_ms=duration,
                 summary=summarise_result(spec.name, payload),
             )
         )

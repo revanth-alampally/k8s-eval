@@ -7,6 +7,7 @@ side of the process, reachable from logs by ``request_id``.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping
 from typing import Any
 
@@ -22,10 +23,12 @@ from app.api.deps import (
     ConfirmationStoreDep,
     KnowledgeServiceDep,
     LLMProviderDep,
+    MetricsDep,
     SettingsDep,
 )
-from app.context import get_correlation_id, new_correlation_id
+from app.context import get_correlation_id, get_trace_id, new_correlation_id
 from app.errors import ConfirmationInvalidError, InvalidRequestError
+from app.observability.instrumentation import emit_agent_event
 from app.tools.base import require_mutating_tool_allowed
 from app.tools.registry import execute_tool, get_tool
 from app.tools.schemas import parse_arguments
@@ -43,9 +46,14 @@ async def run_agent(
     llm: LLMProviderDep,
     knowledge: KnowledgeServiceDep,
     confirmations: ConfirmationStoreDep,
+    metrics: MetricsDep,
 ) -> AgentResponse:
     session_id = request.headers.get(SESSION_ID_HEADER)
     request_id = get_correlation_id() or new_correlation_id()
+    trace_id = get_trace_id() or request_id
+    started = time.perf_counter()
+    emit_agent_event(metrics, "agent.request", request_id=request_id, trace_id=trace_id)
+    metrics.increment("agent_requests_total")
 
     def execute(name: str, arguments: Mapping[str, Any]) -> BaseModel:
         client = kubernetes.get()
@@ -53,6 +61,7 @@ async def run_agent(
 
     if body.confirmation_token is not None:
         if not _is_affirmative(body.message):
+            metrics.increment("safety_denials_total", outcome="confirmation_invalid")
             raise ConfirmationInvalidError("Confirmation requests must explicitly say 'Yes'.")
         if not session_id:
             raise InvalidRequestError(f"{SESSION_ID_HEADER} is required for confirmation.")
@@ -82,9 +91,10 @@ async def run_agent(
             request_id=action.request_id,
             session_id=session_id,
         )
-        return AgentResponse(
+        response = AgentResponse(
             answer=str(result.model_dump(mode="json").get("message", "Mutation completed.")),
             request_id=request_id,
+            trace_id=trace_id,
             status=AgentStatus.SUCCESS,
             tools_used=[
                 ToolInvocation(
@@ -96,15 +106,19 @@ async def run_agent(
                 )
             ],
         )
+        _record_response(metrics, request_id, trace_id, response, started)
+        return response
 
     result = await Agent(
         llm=llm,
         execute=execute,
         knowledge=knowledge,
         settings=settings,
+        metrics=metrics,
     ).run(body.message)
     if result.pending_confirmation is not None:
         if not session_id:
+            metrics.increment("safety_denials_total", outcome="missing_session")
             audit_mutation_execution(
                 outcome="rejected_missing_session",
                 tool=result.pending_confirmation.tool,
@@ -133,14 +147,40 @@ async def run_agent(
                 "expires_at": expires_at,
             }
         )
-    return AgentResponse(
+    response = AgentResponse(
         answer=result.answer,
         request_id=request_id,
+        trace_id=trace_id,
         status=result.status,
         tools_used=result.tools_used,
         pending_confirmation=result.pending_confirmation,
     )
+    _record_response(metrics, request_id, trace_id, response, started)
+    return response
 
 
 def _is_affirmative(message: str) -> bool:
     return message.strip().lower().rstrip(".!") in {"yes", "confirm", "proceed"}
+
+
+def _record_response(
+    metrics: MetricsDep,
+    request_id: str,
+    trace_id: str,
+    response: AgentResponse,
+    started: float,
+) -> None:
+    duration_ms = round((time.perf_counter() - started) * 1000, 2)
+    emit_agent_event(
+        metrics,
+        "agent.response",
+        request_id=request_id,
+        trace_id=trace_id,
+        status=response.status.value,
+        tool_calls=len(response.tools_used),
+        duration_ms=duration_ms,
+    )
+    metrics.observe("agent_latency_seconds", duration_ms / 1000)
+    metrics.observe("agent_tool_calls_per_request", float(len(response.tools_used)))
+    if response.status.value != "success":
+        metrics.increment("agent_errors_total", status=response.status.value)

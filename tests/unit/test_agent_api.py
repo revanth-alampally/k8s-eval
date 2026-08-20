@@ -41,7 +41,15 @@ def test_agent_endpoint_returns_the_public_contract(client: TestClient) -> None:
     assert body["request_id"] == "trace-agent-1"
     assert body["status"] == "success"
     assert [item["tool"] for item in body["tools_used"]] == ["list_pods"]
-    assert set(body) <= {"answer", "request_id", "status", "tools_used", "pending_confirmation"}
+    assert set(body) <= {
+        "answer",
+        "request_id",
+        "trace_id",
+        "status",
+        "tools_used",
+        "pending_confirmation",
+    }
+    assert body["trace_id"]
     assert body.get("pending_confirmation") is None
     assert response.headers[CORRELATION_ID_HEADER] == "trace-agent-1"
 

@@ -360,6 +360,24 @@ curl -s localhost:8000/v1/agent \
 logged at debug, keyed by `request_id`. Chain-of-thought is not a field on the response
 and is dropped in the provider adapter if a vendor emits it.
 
+## Agent observability
+
+Every request has a `request_id` and a `trace_id`. Send a valid `X-Trace-ID` to continue
+a trace; both IDs are returned in response headers, and `trace_id` is included in agent
+responses. The service emits metadata-only lifecycle events: `agent.request`,
+`agent.model_call`, `agent.tool_selected`, `agent.tool_started`, `agent.tool_completed`,
+`agent.tool_failed`, `agent.confirmation_requested`, and `agent.response`.
+
+The in-process registry records request and tool counters plus latency observations. It
+does not export data or expose a metrics endpoint yet. Event fields and metric labels are
+intentionally restricted: no prompt text, tool arguments, logs, secret data,
+credentials, session IDs, or confirmation tokens are retained.
+
+Future adapters can map the same contract to OpenTelemetry spans (using trace/request IDs
+and safe attributes), Prometheus counters/histograms (with low-cardinality labels), and
+Grafana dashboards for error rates, p50/p95 latency, tool calls per request, confirmation
+volume, and safety denials.
+
 The LLM is behind `LLMProvider.generate(...)`. Locally, `KAGENT_LLM_PROVIDER=fake` (the
 default) is a keyword-driven stand-in that drives the real tools with no API key.
 Tests inject `ScriptedLLMProvider` with a fixed list of responses. OpenAI is an adapter
@@ -370,6 +388,5 @@ another adapter, not a change to the agent.
 
 Implemented: configuration, structured logging, correlation IDs, error taxonomy,
 FastAPI skeleton, health endpoints, Kubernetes tools including `diagnose_pod`, and the
-agent loop behind `POST /v1/agent`.
-
-Next: confirmation redemption for mutations → AI evals.
+agent loop behind `POST /v1/agent`, mutation confirmation, hermetic AI evals, and
+provider-independent request observability.
