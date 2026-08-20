@@ -5,7 +5,7 @@ PY := $(VENV)/bin/python
 DEMO_NAMESPACE ?= ai-agent-demo
 export DEMO_NAMESPACE
 
-.PHONY: help install hooks-install run test lint fmt check rag-index demo-up demo-down demo-status cluster-up cluster-down clean
+.PHONY: help install hooks-install run test lint fmt check rag-index evals demo-up demo-down demo-status cluster-up cluster-down clean
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -38,6 +38,9 @@ check: ## Run everything the pre-commit hook runs, against the working tree
 
 rag-index: ## Refresh the local Chroma knowledge index
 	$(PY) -m app.knowledge.index
+
+evals: ## Run hermetic fake-model AI evaluation corpus
+	$(PY) -m evals.runner --provider fake
 
 demo-up: ## Apply the demo workloads (healthy + intentionally broken)
 	./scripts/demo-up.sh

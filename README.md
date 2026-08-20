@@ -203,6 +203,7 @@ make lint    # ruff + mypy
 make fmt     # ruff format
 make check   # everything the pre-commit hook runs
 make rag-index  # download the local embedding model if needed and refresh Chroma
+make evals   # fixture-backed AI behavior evaluation; writes eval-results.json
 ```
 
 ### Knowledge retrieval
@@ -234,6 +235,21 @@ or a real model can never become a prerequisite for committing.
 ```bash
 git commit --no-verify   # bypass when you genuinely need to
 ```
+
+### Testing layers
+
+This project keeps deterministic software tests and AI behavior evaluation separate.
+
+- **Layer 1 — pytest (`tests/`)** covers deterministic behavior: typed Kubernetes
+  inputs and API errors, FastAPI contracts, malformed requests, timeouts, namespace
+  restrictions, tool registration, and confirmation-token security. These tests use
+  mocks and run in `make test`.
+- **Layer 2 — AI evals (`evals/`)** is a JSONL corpus for scoring an agent/model's
+  tool selection, argument choice, grounding, refusals, and confirmation behavior.
+  It is not collected by pytest or pre-commit because an evaluator may use a real model
+  provider. `make evals` uses the deterministic fake provider and never reaches a
+  Kubernetes cluster; `--provider configured` permits a real LLM while retaining the
+  same hermetic fixture tools. See `evals/README.md`.
 
 ## The tools
 
