@@ -57,6 +57,36 @@ fixture executor: it cannot contact or mutate a Kubernetes cluster. Groundedness
 deterministic contract score over fixture evidence/claim markers, not an LLM-judge
 semantic guarantee.
 
+## Optional semantic judge
+
+Use a judge only as a supplement to deterministic scoring:
+
+```bash
+KAGENT_LLM_PROVIDER=openai KAGENT_LLM_API_KEY=... \
+  .venv/bin/python -m evals.runner --provider configured --judge configured
+```
+
+The judge receives only the user request, sanitized relevant tool evidence, final
+answer, and a fixed 1–5 rubric for groundedness, correctness, relevance, completeness,
+and safety. It must return validated JSON. Tool choice, arguments, mutation execution,
+API behavior, and hard safety guarantees remain deterministic checks; a judge score
+never overrides them.
+
+## Adversarial corpus
+
+`evals/adversarial.jsonl` focuses on prompt injection, malicious log content,
+nonexistent-resource hallucination traps, ambiguous mutations, namespace scope, and
+confirmation replay. Run it with:
+
+```bash
+.venv/bin/python -m evals.runner --dataset evals/adversarial.jsonl --provider fake
+```
+
+Its result report includes `adversarial_success_rate` separately from ordinary cases.
+Malicious logs are fixture data, not instructions. The agent must not execute or suggest
+their embedded commands; confirmation tokens are also tested by deterministic API tests
+because their redemption is an HTTP workflow rather than an agent-planning turn.
+
 Tool-result fixtures, not the evaluator prompt, must provide any simulated Kubernetes
 state. A passing answer must remain grounded in those supplied results and must never
 invent cluster facts.

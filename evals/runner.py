@@ -19,6 +19,7 @@ from app.llm.base import LLMProvider, LLMResponse, Message, ToolDefinition
 from app.llm.factory import build_provider
 from app.llm.fake import HeuristicLLMProvider
 from evals.fixtures import FixtureKnowledge, FixtureToolExecutor
+from evals.judge import LLMJsonJudge, SemanticJudge
 from evals.schemas import EvalCase, EvalCaseResult, EvalRun, TrajectoryEvent
 from evals.scoring import aggregate, score_case
 
@@ -68,6 +69,7 @@ class RecordingFixtureExecutor:
     def __init__(self, executor: FixtureToolExecutor, events: list[TrajectoryEvent]) -> None:
         self._executor = executor
         self._events = events
+        self.evidence: list[dict[str, Any]] = []
 
     def __call__(self, name: str, arguments: Mapping[str, Any]) -> BaseModel:
         values = dict(arguments)
@@ -83,6 +85,13 @@ class RecordingFixtureExecutor:
                     summary=exc.message,
                 )
             )
+            self.evidence.append(
+                {
+                    "tool": name,
+                    "outcome": exc.code.value,
+                    "error": {"code": exc.code.value, "message": exc.message},
+                }
+            )
             raise
         self._events.append(
             TrajectoryEvent(
@@ -92,6 +101,14 @@ class RecordingFixtureExecutor:
                 summary=type(result).__name__,
             )
         )
+        self.evidence.append(
+            {
+                "tool": name,
+                "outcome": "success",
+                # Logs are intentionally excluded even from fixture-backed judge input.
+                "result": result.model_dump(mode="json", exclude={"content"}),
+            }
+        )
         return result
 
 
@@ -100,6 +117,7 @@ async def run_case(
     *,
     provider: LLMProvider,
     settings: Settings,
+    judge: SemanticJudge | None = None,
 ) -> EvalCaseResult:
     executor = FixtureToolExecutor(case.fixture)
     trajectory = [TrajectoryEvent(event="user_request", summary=case.user_input)]
@@ -136,6 +154,14 @@ async def run_case(
         tools_used=tools,
         mutation_executed=executor.mutation_executed,
     )
+    semantic_judgment = None
+    if judge is not None:
+        judgment = await judge.evaluate(
+            user_request=case.user_input,
+            tool_evidence=recording_executor.evidence,
+            final_answer=answer,
+        )
+        semantic_judgment = judgment.model_dump(mode="json")
     tool_latency = sum(float(item.get("duration_ms", 0.0)) for item in tools)
     return EvalCaseResult(
         id=case.id,
@@ -151,6 +177,7 @@ async def run_case(
         model_turns=recording_provider.turns,
         tool_calls=len(tools),
         trajectory=trajectory,
+        semantic_judgment=semantic_judgment,
     )
 
 
@@ -160,8 +187,11 @@ async def run_suite(
     provider: LLMProvider,
     settings: Settings,
     dataset: str,
+    judge: SemanticJudge | None = None,
 ) -> EvalRun:
-    results = [await run_case(case, provider=provider, settings=settings) for case in cases]
+    results = [
+        await run_case(case, provider=provider, settings=settings, judge=judge) for case in cases
+    ]
     latency = {
         "average_total_latency_ms": _average([item.total_latency_ms for item in results]),
         "average_model_latency_ms": _average([item.model_latency_ms for item in results]),
@@ -173,7 +203,11 @@ async def run_suite(
         dataset=dataset,
         provider=provider.name,
         cases=results,
-        metrics=aggregate([item.scores for item in results], latency),
+        metrics={
+            **aggregate([item.scores for item in results], latency),
+            **_semantic_averages(results),
+            **_adversarial_metrics(cases, results),
+        },
     )
 
 
@@ -201,6 +235,7 @@ def main() -> None:
     parser.add_argument("--dataset", type=Path, default=Path("evals/k8s_ops_agent.jsonl"))
     parser.add_argument("--output", type=Path, default=Path("eval-results.json"))
     parser.add_argument("--provider", choices=("fake", "configured"), default="fake")
+    parser.add_argument("--judge", choices=("none", "configured"), default="none")
     args = parser.parse_args()
     settings = Settings()
     provider = (
@@ -208,12 +243,14 @@ def main() -> None:
         if args.provider == "fake"
         else build_provider(settings)
     )
+    judge = LLMJsonJudge(build_provider(settings)) if args.judge == "configured" else None
     run = asyncio.run(
         run_suite(
             load_cases(args.dataset),
             provider=provider,
             settings=settings,
             dataset=str(args.dataset),
+            judge=judge,
         )
     )
     write_results(run, args.output)
@@ -222,6 +259,33 @@ def main() -> None:
 
 def _average(values: Sequence[float]) -> float:
     return round(sum(values) / len(values), 2) if values else 0.0
+
+
+def _semantic_averages(results: Sequence[EvalCaseResult]) -> dict[str, float]:
+    judgments = [result.semantic_judgment for result in results if result.semantic_judgment]
+    if not judgments:
+        return {}
+    return {
+        f"semantic_{dimension}": _average(
+            [float(judgment["scores"][dimension]) for judgment in judgments]
+        )
+        for dimension in ("groundedness", "correctness", "relevance", "completeness", "safety")
+    }
+
+
+def _adversarial_metrics(
+    cases: Sequence[EvalCase], results: Sequence[EvalCaseResult]
+) -> dict[str, float]:
+    adversarial_ids = {case.id for case in cases if case.category == "adversarial"}
+    adversarial_results = [result for result in results if result.id in adversarial_ids]
+    if not adversarial_results:
+        return {}
+    return {
+        "adversarial_success_rate": _average(
+            [float(result.passed) for result in adversarial_results]
+        ),
+        "adversarial_case_count": float(len(adversarial_results)),
+    }
 
 
 def _append_unrecorded_invocations(

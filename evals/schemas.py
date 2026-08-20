@@ -14,6 +14,7 @@ class EvalCase(BaseModel):
     expected_tools: list[str] = Field(default_factory=list)
     expected_arguments: dict[str, Any] = Field(default_factory=dict)
     expected_behavior: str
+    category: str = "standard"
     fixture: str = "mixed_cluster"
     expected_status: str | None = None
     allowed_tools: list[str] | None = None
@@ -65,6 +66,7 @@ class EvalCaseResult(BaseModel):
     model_turns: int
     tool_calls: int
     trajectory: list[TrajectoryEvent] = Field(default_factory=list)
+    semantic_judgment: dict[str, Any] | None = None
 
 
 class EvalRun(BaseModel):
